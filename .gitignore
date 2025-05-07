@@ -27,3 +27,4 @@ __pycache__/
 
 # macOS-specific
 .DS_Store
+.github/
