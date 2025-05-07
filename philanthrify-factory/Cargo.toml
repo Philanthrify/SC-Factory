@@ -1,0 +1,15 @@
+[package]
+name = "philanthrify-factory"
+version = "0.0.0"
+authors = ["you"]
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+multiversx-sc = "0.57.1"
+
+[dev-dependencies]
+multiversx-sc-scenario = "0.57.1"

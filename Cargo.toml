@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+
+members = [
+  "philanthrify-factory",
+  "philanthrify-factory/meta",
+  "philanthrify-charity",
+  "philanthrify-charity/meta",
+  "philanthrify-project",
+  "philanthrify-project/meta",
+]

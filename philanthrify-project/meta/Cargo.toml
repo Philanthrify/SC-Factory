@@ -1,0 +1,11 @@
+[package]
+name = "philanthrify-project-abi"
+version = "0.0.0"
+authors = ["you"]
+edition = "2021"
+publish = false
+
+[dependencies]
+multiversx-sc-meta-lib = "0.57.1"
+multiversx-sc = "0.57.1"
+philanthrify-project = { path = ".." }
