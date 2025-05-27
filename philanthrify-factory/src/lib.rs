@@ -12,10 +12,7 @@ pub trait PhilanthrifyFactory {
 
     #[upgrade]
     fn upgrade(&self) {
-        require!(
-            self.blockchain().get_caller() == self.owner().get(),
-            "Only the owner can upgrade the contract"
-        );
+        // No owner check - any wallet can upgrade the contract
     }
 
     #[endpoint(deployCharity)]
@@ -42,7 +39,7 @@ pub trait PhilanthrifyFactory {
             )
             .argument(&charity_name)
             .argument(&self.blockchain().get_sc_address())
-            .argument(&self.blockchain().get_caller())
+            .argument(&self.blockchain().get_sc_address()) // Set Charity owner to Factory
             .gas(gas_for_deploy)
             .returns(multiversx_sc::types::ReturnsNewAddress)
             .sync_call()

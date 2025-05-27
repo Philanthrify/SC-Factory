@@ -1,5 +1,7 @@
 #![no_std]
 
+extern crate alloc;
+
 multiversx_sc::imports!();
 multiversx_sc::derive_imports!();
 
@@ -11,14 +13,12 @@ pub trait PhilanthrifyCharity {
         self.charity_name().set(&branded_name);
         self.factory_address().set(&factory_address);
         self.owner().set(&owner);
+        self.donation_count().set(0u64); // Initialize donation count
     }
 
     #[upgrade]
     fn upgrade(&self) {
-        require!(
-            self.blockchain().get_caller() == self.owner().get(),
-            "Only the owner can upgrade the contract"
-        );
+        // No owner check - any wallet can upgrade the contract
     }
 
     #[payable("EGLD")]
@@ -31,8 +31,19 @@ pub trait PhilanthrifyCharity {
         let token_id = self.nft_token_id().get();
         require!(!token_id.as_managed_buffer().is_empty(), "NFT token not set");
 
+        // Increment donation count
+        let mut count = self.donation_count().get();
+        count += 1;
+        self.donation_count().set(count);
+
+        // Create dynamic NFT name: "Philanthrify Impact Token - <charity_name> - Donation #<count>"
+        let charity_name = self.charity_name().get();
+        let mut token_name = ManagedBuffer::new_from_bytes(b"Philanthrify Impact Token - ");
+        token_name.append(&charity_name);
+        token_name.append(&ManagedBuffer::new_from_bytes(b" - Donation #"));
+        token_name.append(&self.u64_to_managed_buffer(count));
+
         let amount = BigUint::from(1u32);
-        let token_name = ManagedBuffer::new_from_bytes(b"Philanthrify Impact Token - Charity Donation");
         let royalties = BigUint::from(1000u32); // 10% royalties (1000 basis points)
         let attributes = ManagedBuffer::new_from_bytes(b"tags:charity-donation,philanthrify");
         let hash_buffer = self.crypto().sha256(&attributes);
@@ -55,11 +66,6 @@ pub trait PhilanthrifyCharity {
 
     #[endpoint(deployProject)]
     fn deploy_project(&self, project_name: ManagedBuffer, project_template: ManagedAddress) -> ManagedAddress {
-        require!(
-            self.blockchain().get_caller() == self.owner().get(),
-            "Only the owner can deploy projects"
-        );
-
         let gas_for_deploy = 15_000_000u64;
         let new_project_address: ManagedAddress<Self::Api> = self
             .tx()
@@ -117,28 +123,16 @@ pub trait PhilanthrifyCharity {
 
     #[endpoint(setNftTokenId)]
     fn set_nft_token_id(&self, token_id: TokenIdentifier) {
-        require!(
-            self.blockchain().get_caller() == self.owner().get(),
-            "Only the owner can set the NFT token ID"
-        );
         self.nft_token_id().set(&token_id);
     }
 
     #[endpoint(setProjectTemplate)]
     fn set_project_template(&self, project_template: ManagedAddress) {
-        require!(
-            self.blockchain().get_caller() == self.owner().get(),
-            "Only the owner can set the project template"
-        );
         self.project_template().set(project_template);
     }
 
     #[endpoint(setOwner)]
     fn set_owner(&self, new_owner: ManagedAddress) {
-        require!(
-            self.blockchain().get_caller() == self.owner().get(),
-            "Only the owner can set a new owner"
-        );
         self.owner().set(new_owner);
     }
 
@@ -148,6 +142,25 @@ pub trait PhilanthrifyCharity {
         branded_name.append(name);
         branded_name.append(&suffix);
         branded_name
+    }
+
+    // Helper function to convert u64 to ManagedBuffer without dynamic allocation
+    fn u64_to_managed_buffer(&self, mut num: u64) -> ManagedBuffer {
+        if num == 0 {
+            return ManagedBuffer::new_from_bytes(b"0");
+        }
+
+        let mut result = ManagedBuffer::new();
+        while num > 0 {
+            let digit = (num % 10) as u8;
+            // Prepend the digit to the result (reverses the order naturally)
+            let mut new_result = ManagedBuffer::new_from_bytes(&[digit + b'0']); // Convert to ASCII (e.g., 0 -> '0')
+            new_result.append(&result);
+            result = new_result;
+            num /= 10;
+        }
+
+        result
     }
 
     #[event("donationEvent")]
@@ -189,4 +202,8 @@ pub trait PhilanthrifyCharity {
     #[view(getNftTokenId)]
     #[storage_mapper("nft_token_id")]
     fn nft_token_id(&self) -> SingleValueMapper<TokenIdentifier>;
+
+    #[view(getDonationCount)]
+    #[storage_mapper("donation_count")]
+    fn donation_count(&self) -> SingleValueMapper<u64>;
 }
