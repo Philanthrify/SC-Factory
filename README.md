@@ -8,7 +8,7 @@ There are three main components:
 
 1. Philanthrify Factory
 2. Charity Contract
-3. Project Contrac
+3. Project Contract
 
 ### Philanthrify Factory
 
