@@ -24,7 +24,6 @@ The system consists of three main smart contracts:
 - Deployed by charity contracts for specific fundraising projects
 - Accepts donations for individual projects
 - Can only receive funds through proper donation flow
-- Direct transfers will fail (security feature)
 - Supports batch donations
 
 
