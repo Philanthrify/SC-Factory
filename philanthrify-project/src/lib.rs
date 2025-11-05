@@ -8,97 +8,128 @@ multiversx_sc::derive_imports!();
 #[multiversx_sc::contract]
 pub trait PhilanthrifyProject {
     #[init]
-    fn init(&self, project_name: ManagedBuffer, charity_address: ManagedAddress) {
+    fn init(
+        &self,
+        project_name: ManagedBuffer,
+        charity_address: ManagedAddress,
+        factory_address: ManagedAddress,
+        global_admin: ManagedAddress,
+    ) {
         self.project_name().set(&project_name);
         self.charity_address().set(&charity_address);
-        self.donation_count().set(0u64); // Initialize donation count
+        self.factory_address().set(&factory_address);
+        self.global_admin().set(&global_admin);
+        self.owner().set(&charity_address);
     }
 
     #[upgrade]
     fn upgrade(&self) {
-        // No owner check - any wallet can upgrade the contract
+        let caller = self.blockchain().get_caller();
+        let owner = self.owner().get();
+        let factory = self.factory_address().get();
+        let admin = self.global_admin().get();
+
+        require!(
+            caller == owner || caller == factory || caller == admin,
+            "Only charity, factory, or admin allowed"
+        );
+    }
+
+    fn only_owner(&self) {
+        require!(
+            self.blockchain().get_caller() == self.owner().get(),
+            "Only owner allowed"
+        );
     }
 
     #[payable("EGLD")]
-    #[endpoint(donate)]
-    fn donate(&self) {
+    #[endpoint(donateToProject)]
+    fn donate_to_project(&self, custom_tags: MultiValueEncoded<ManagedBuffer>) {
         let payment = self.call_value().egld();
         require!(*payment > BigUint::zero(), "Must send some EGLD");
 
         let caller = self.blockchain().get_caller();
-        let charity_address = self.charity_address().get();
-        require!(
-            caller == charity_address,
-            "Only the owning Charity contract can donate"
-        );
-
-        let token_id = self.nft_token_id().get();
-        require!(!token_id.as_managed_buffer().is_empty(), "NFT token not set");
-
-        // Increment donation count
-        let mut count = self.donation_count().get();
-        count += 1;
-        self.donation_count().set(count);
-
-        // Create dynamic NFT name: "Philanthrify Impact Token - <project_name> - Donation #<count>"
+        let factory = self.factory_address().get();
         let project_name = self.project_name().get();
-        let mut token_name = ManagedBuffer::new_from_bytes(b"Philanthrify Impact Token - ");
-        token_name.append(&project_name);
-        token_name.append(&ManagedBuffer::new_from_bytes(b" - Donation #"));
-        token_name.append(&self.u64_to_managed_buffer(count));
 
-        let amount = BigUint::from(1u32);
-        let royalties = BigUint::from(1000u32); // 10% royalties (1000 basis points)
-        let attributes = ManagedBuffer::new_from_bytes(b"tags:project-donation,philanthrify");
-        let hash_buffer = self.crypto().sha256(&attributes);
-        let attributes_hash = hash_buffer.as_managed_buffer();
+        let mut call = self.tx()
+            .to(&factory)
+            .raw_call("mintNft")
+            .argument(&caller)
+            .argument(&*payment)
+            .argument(&project_name)
+            .argument(&ManagedBuffer::from("project"));
 
-        let nonce = self.send().esdt_nft_create(
-            &token_id,
-            &amount,
-            &token_name,
-            &royalties,
-            &attributes_hash,
-            &attributes,
-            &ManagedVec::new(),
-        );
-
-        self.send().direct_esdt(&caller, &token_id, nonce, &amount);
-
-        self.donation_event(&charity_address, &*payment, &token_id, nonce);
-    }
-
-    #[endpoint(setNftTokenId)]
-    fn set_nft_token_id(&self, token_id: TokenIdentifier) {
-        self.nft_token_id().set(&token_id);
-    }
-
-    // Helper function to convert u64 to ManagedBuffer without dynamic allocation
-    fn u64_to_managed_buffer(&self, mut num: u64) -> ManagedBuffer {
-        if num == 0 {
-            return ManagedBuffer::new_from_bytes(b"0");
+        for tag in custom_tags.into_iter() {
+            call = call.argument(&tag);
         }
 
-        let mut result = ManagedBuffer::new();
-        while num > 0 {
-            let digit = (num % 10) as u8;
-            // Prepend the digit to the result (reverses the order naturally)
-            let mut new_result = ManagedBuffer::new_from_bytes(&[digit + b'0']); // Convert to ASCII (e.g., 0 -> '0')
-            new_result.append(&result);
-            result = new_result;
-            num /= 10;
-        }
+        call.sync_call();
 
-        result
+        self.donation_event(&caller, &*payment, &project_name);
     }
 
-    #[event("donationEvent")]
+    #[payable("EGLD")]
+    #[endpoint(batchDonateToProject)]
+    fn batch_donate_to_project(&self, num_donations: u64, custom_tags: MultiValueEncoded<ManagedBuffer>) {
+        let total_payment = self.call_value().egld();
+        require!(*total_payment > BigUint::zero(), "Must send some EGLD");
+        require!(num_donations > 0 && num_donations <= 100, "Batch must be 1-100");
+
+        let payment_per = total_payment.clone() / BigUint::from(num_donations);
+        require!(payment_per > BigUint::zero(), "Payment per donation too low");
+
+        let caller = self.blockchain().get_caller();
+        let factory = self.factory_address().get();
+        let project_name = self.project_name().get();
+
+        let mut tags_vec: ManagedVec<Self::Api, ManagedBuffer> = ManagedVec::new();
+        for tag in custom_tags.into_iter() {
+            tags_vec.push(tag);
+        }
+
+        for i in 0..num_donations {
+            let mut call = self.tx()
+                .to(&factory)
+                .raw_call("mintNft")
+                .argument(&caller)
+                .argument(&payment_per)
+                .argument(&project_name)
+                .argument(&ManagedBuffer::from("project"));
+
+            for tag in tags_vec.iter() {
+                call = call.argument(&tag);
+            }
+
+            call.sync_call();
+
+            self.batch_event(&caller, i + 1, num_donations, &payment_per, &project_name);
+        }
+    }
+
+    #[endpoint(setOwner)]
+    fn set_owner(&self, new_owner: ManagedAddress) {
+        self.only_owner();
+        require!(!new_owner.is_zero(), "Invalid owner address");
+        self.owner().set(&new_owner);
+    }
+
+    #[event("donation_event")]
     fn donation_event(
         &self,
         #[indexed] donor: &ManagedAddress,
         #[indexed] amount: &BigUint,
-        #[indexed] token_id: &TokenIdentifier,
-        #[indexed] nonce: u64,
+        #[indexed] entity: &ManagedBuffer,
+    );
+
+    #[event("batch_event")]
+    fn batch_event(
+        &self,
+        #[indexed] caller: &ManagedAddress,
+        #[indexed] current: u64,
+        #[indexed] total: u64,
+        #[indexed] amount_per: &BigUint,
+        #[indexed] entity: &ManagedBuffer,
     );
 
     #[view(getProjectName)]
@@ -109,11 +140,15 @@ pub trait PhilanthrifyProject {
     #[storage_mapper("charity_address")]
     fn charity_address(&self) -> SingleValueMapper<ManagedAddress>;
 
-    #[view(getNftTokenId)]
-    #[storage_mapper("nft_token_id")]
-    fn nft_token_id(&self) -> SingleValueMapper<TokenIdentifier>;
+    #[view(getFactoryAddress)]
+    #[storage_mapper("factory_address")]
+    fn factory_address(&self) -> SingleValueMapper<ManagedAddress>;
 
-    #[view(getDonationCount)]
-    #[storage_mapper("donation_count")]
-    fn donation_count(&self) -> SingleValueMapper<u64>;
+    #[view(getGlobalAdmin)]
+    #[storage_mapper("global_admin")]
+    fn global_admin(&self) -> SingleValueMapper<ManagedAddress>;
+
+    #[view(getOwner)]
+    #[storage_mapper("owner")]
+    fn owner(&self) -> SingleValueMapper<ManagedAddress>;
 }
