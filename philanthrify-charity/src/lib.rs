@@ -40,12 +40,115 @@ pub trait PhilanthrifyCharity {
         );
     }
 
-    #[payable("EGLD")]
-    #[endpoint(donateToCharity)]
-    fn donate_to_charity(&self, custom_tags: MultiValueEncoded<ManagedBuffer>) {
-        let payment = self.call_value().egld();
-        require!(*payment > BigUint::zero(), "Must send some EGLD");
+    // ============================================================
+    // TRANSACTION - MINTS NFT TO TRACK CHARITY SPENDING
+    // ============================================================
+    #[endpoint(transactionForCharity)]
+    fn transaction_for_charity(
+        &self,
+        display_amount: BigUint,
+        category: ManagedBuffer,
+        description: ManagedBuffer,
+        user_image_uri: ManagedBuffer,  // Optional user image (CID or full URL) - empty string means no image
+    ) {
+        self.only_owner();
 
+        // 0 EGLD - only gas fees paid. display_amount is for NFT display only
+        require!(display_amount > BigUint::zero(), "Display amount must be > 0");
+
+        let charity_name = self.charity_name().get();
+        let owner = self.owner().get();
+        let factory = self.factory_address().get();
+
+        // Call factory to mint transaction NFT
+        self.tx()
+            .to(&factory)
+            .raw_call("mintTransactionNft")
+            .argument(&owner)
+            .argument(&display_amount)  // Display amount only
+            .argument(&charity_name)
+            .argument(&ManagedBuffer::from("charity"))
+            .argument(&category)
+            .argument(&description)
+            .argument(&user_image_uri)  // Empty string if not provided
+            .sync_call();
+
+        self.transaction_event(&charity_name, &display_amount, &category, &description);
+    }
+
+    #[allow_multiple_var_args]
+    #[endpoint(batchTransactionForCharity)]
+    fn batch_transaction_for_charity(
+        &self,
+        num_transactions: u64,
+        display_amounts: MultiValueEncoded<BigUint>,
+        categories: MultiValueEncoded<ManagedBuffer>,
+        descriptions: MultiValueEncoded<ManagedBuffer>,
+    ) {
+        self.only_owner();
+        require!(num_transactions > 0, "Number of transactions must be > 0");
+        
+        let mut amounts_vec: ManagedVec<Self::Api, BigUint> = ManagedVec::new();
+        for amount in display_amounts.into_iter() {
+            amounts_vec.push(amount);
+        }
+        
+        let mut categories_vec: ManagedVec<Self::Api, ManagedBuffer> = ManagedVec::new();
+        for category in categories.into_iter() {
+            categories_vec.push(category);
+        }
+        
+        let mut descriptions_vec: ManagedVec<Self::Api, ManagedBuffer> = ManagedVec::new();
+        for description in descriptions.into_iter() {
+            descriptions_vec.push(description);
+        }
+        
+        require!(
+            amounts_vec.len() == num_transactions as usize &&
+            categories_vec.len() == num_transactions as usize &&
+            descriptions_vec.len() == num_transactions as usize,
+            "Arrays length mismatch"
+        );
+
+        let charity_name = self.charity_name().get();
+        let owner = self.owner().get();
+        let factory = self.factory_address().get();
+
+        for i in 0..num_transactions {
+            let display_amount = amounts_vec.get(i as usize);
+            let category = categories_vec.get(i as usize);
+            let description = descriptions_vec.get(i as usize);
+            
+            require!(*display_amount > BigUint::zero(), "Display amount must be > 0");
+            
+            self.tx()
+                .to(&factory)
+                .raw_call("mintTransactionNft")
+                .argument(&owner)
+                .argument(&display_amount)
+                .argument(&charity_name)
+                .argument(&ManagedBuffer::from("charity"))
+                .argument(&category)
+                .argument(&description)
+                .argument(&ManagedBuffer::new())  // Empty string for batch (no user image)
+                .sync_call();
+
+            self.batch_transaction_event(&charity_name, i + 1, num_transactions, &display_amount, &category, &description);
+        }
+    }
+
+    // ============================================================
+    // DONATION FUNCTIONS
+    // ============================================================
+
+    #[endpoint(donateToCharity)]
+    fn donate_to_charity(
+        &self,
+        display_amount: BigUint,
+        user_image_uri: ManagedBuffer,  // Optional user image (CID or full URL) - empty string means no image
+        custom_tags: MultiValueEncoded<ManagedBuffer>,
+    ) {
+        // 0 EGLD - only gas fees paid. display_amount is for NFT display only
         let caller = self.blockchain().get_caller();
         let factory = self.factory_address().get();
         let charity_name = self.charity_name().get();
@@ -54,9 +157,10 @@ pub trait PhilanthrifyCharity {
             .to(&factory)
             .raw_call("mintNft")
             .argument(&caller)
-            .argument(&*payment)
+            .argument(&display_amount)  // Display amount only
             .argument(&charity_name)
-            .argument(&ManagedBuffer::from("charity"));
+            .argument(&ManagedBuffer::from("charity"))
+            .argument(&user_image_uri);  // user_image_uri before custom_tags
 
         for tag in custom_tags.into_iter() {
             call = call.argument(&tag);
@@ -64,18 +168,14 @@ pub trait PhilanthrifyCharity {
 
         call.sync_call();
 
-        self.donation_event(&caller, &*payment, &charity_name);
+        self.donation_event(&caller, &display_amount, &charity_name);
     }
 
-    #[payable("EGLD")]
     #[endpoint(batchDonateToCharity)]
-    fn batch_donate_to_charity(&self, num_donations: u64, custom_tags: MultiValueEncoded<ManagedBuffer>) {
-        let total_payment = self.call_value().egld();
-        require!(*total_payment > BigUint::zero(), "Must send some EGLD");
+    fn batch_donate_to_charity(&self, num_donations: u64, display_amount_per_donation: BigUint, custom_tags: MultiValueEncoded<ManagedBuffer>) {
+        // 0 EGLD - only gas fees paid. display_amount is for NFT display only
         require!(num_donations > 0 && num_donations <= 100, "Batch must be 1-100");
-
-        let payment_per_donation = total_payment.clone() / BigUint::from(num_donations);
-        require!(payment_per_donation > BigUint::zero(), "Payment per donation too low");
+        require!(display_amount_per_donation > BigUint::zero(), "Display amount must be > 0");
 
         let caller = self.blockchain().get_caller();
         let factory = self.factory_address().get();
@@ -91,7 +191,7 @@ pub trait PhilanthrifyCharity {
                 .to(&factory)
                 .raw_call("mintNft")
                 .argument(&caller)
-                .argument(&payment_per_donation)
+                .argument(&display_amount_per_donation)  // Display amount only
                 .argument(&charity_name)
                 .argument(&ManagedBuffer::from("charity"));
 
@@ -101,49 +201,7 @@ pub trait PhilanthrifyCharity {
 
             call.sync_call();
 
-            self.batch_event(&caller, i + 1, num_donations, &payment_per_donation, &charity_name);
-        }
-    }
-
-    #[payable("EGLD")]
-    #[endpoint(forwardDonationToProject)]
-    fn forward_donation_to_project(&self, project_address: ManagedAddress) {
-        let payment = self.call_value().egld();
-        require!(*payment > BigUint::zero(), "Must send some EGLD");
-        require!(!project_address.is_zero(), "Invalid project address");
-
-        let caller = self.blockchain().get_caller();
-
-        self.tx()
-            .to(&project_address)
-            .egld(&*payment)
-            .raw_call("donateToProject")
-            .sync_call();
-
-        self.forwarded_event(&caller, &*payment, &project_address);
-    }
-
-    #[payable("EGLD")]
-    #[endpoint(batchForwardDonationToProject)]
-    fn batch_forward_donation_to_project(&self, project_address: ManagedAddress, num_donations: u64) {
-        let total_payment = self.call_value().egld();
-        require!(*total_payment > BigUint::zero(), "Must send some EGLD");
-        require!(num_donations > 0 && num_donations <= 100, "Batch must be 1-100");
-        require!(!project_address.is_zero(), "Invalid project address");
-
-        let payment_per_donation = total_payment.clone() / BigUint::from(num_donations);
-        require!(payment_per_donation > BigUint::zero(), "Payment per donation too low");
-
-        let caller = self.blockchain().get_caller();
-
-        for i in 0..num_donations {
-            self.tx()
-                .to(&project_address)
-                .egld(&payment_per_donation)
-                .raw_call("donateToProject")
-                .sync_call();
-
-            self.batch_event_project(&caller, i + 1, num_donations, &payment_per_donation, &project_address);
+            self.batch_event(&caller, i + 1, num_donations, &display_amount_per_donation, &charity_name);
         }
     }
 
@@ -152,10 +210,11 @@ pub trait PhilanthrifyCharity {
         self.only_owner();
 
         let project_template = self.project_template().get();
-        require!(!project_template.is_zero(), "Project template not set");
+        require!(!project_template.is_zero(), "Project template not set. Use setProjectTemplate or deploy charity with template set in factory.");
 
         let factory_address = self.factory_address().get();
         let charity_address = self.blockchain().get_sc_address();
+        let charity_owner = self.owner().get(); // This is the admin address
 
         let new_project: ManagedAddress = self
             .tx()
@@ -170,7 +229,7 @@ pub trait PhilanthrifyCharity {
             .argument(&project_name)
             .argument(&charity_address)
             .argument(&factory_address)
-            .argument(&charity_address)
+            .argument(&charity_owner)  // Pass charity owner (admin) as global_admin, not charity address
             .gas(15_000_000)
             .returns(ReturnsNewAddress)
             .sync_call()
@@ -200,6 +259,19 @@ pub trait PhilanthrifyCharity {
         self.project_template().set(project_template);
     }
 
+    // ============================================================
+    // EVENTS (Fixed - all indexed to avoid data parameter error)
+    // ============================================================
+
+    #[event("transaction_event")]
+    fn transaction_event(
+        &self,
+        #[indexed] entity: &ManagedBuffer,
+        #[indexed] amount: &BigUint,
+        #[indexed] category: &ManagedBuffer,
+        #[indexed] description: &ManagedBuffer,
+    );
+
     #[event("donation_event")]
     fn donation_event(
         &self,
@@ -218,30 +290,27 @@ pub trait PhilanthrifyCharity {
         #[indexed] entity: &ManagedBuffer,
     );
 
-    #[event("batch_event_project")]
-    fn batch_event_project(
-        &self,
-        #[indexed] caller: &ManagedAddress,
-        #[indexed] current: u64,
-        #[indexed] total: u64,
-        #[indexed] amount_per: &BigUint,
-        #[indexed] project: &ManagedAddress,
-    );
-
-    #[event("forwarded_event")]
-    fn forwarded_event(
-        &self,
-        #[indexed] caller: &ManagedAddress,
-        #[indexed] amount: &BigUint,
-        #[indexed] project: &ManagedAddress,
-    );
-
     #[event("project_deployed")]
     fn project_deployed_event(
         &self,
         #[indexed] project_name: &ManagedBuffer,
         #[indexed] address: &ManagedAddress,
     );
+
+    #[event("batch_transaction_event")]
+    fn batch_transaction_event(
+        &self,
+        #[indexed] entity: &ManagedBuffer,
+        #[indexed] current: u64,
+        #[indexed] total: u64,
+        #[indexed] amount: &BigUint,
+        #[indexed] category: &ManagedBuffer,
+        #[indexed] description: &ManagedBuffer,
+    );
+
+    // ============================================================
+    // STORAGE
+    // ============================================================
 
     #[view(getCharityName)]
     #[storage_mapper("charity_name")]
