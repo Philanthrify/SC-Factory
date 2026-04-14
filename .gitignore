@@ -27,5 +27,6 @@ __pycache__/
 
 # macOS-specific
 .DS_Store
-.github/
+# .github/  — keep workflows (sync-nft-metadata.yml etc.)
+ipfs-sync/.pem-gh
 # Updated Wed May  7 15:22:53 BST 2025

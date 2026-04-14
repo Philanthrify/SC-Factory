@@ -655,6 +655,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "philanthrify-charity-dao"
+version = "0.0.0"
+dependencies = [
+ "multiversx-sc",
+ "multiversx-sc-scenario",
+]
+
+[[package]]
+name = "philanthrify-charity-dao-abi"
+version = "0.0.0"
+dependencies = [
+ "multiversx-sc",
+ "multiversx-sc-meta-lib",
+ "philanthrify-charity-dao",
+]
+
+[[package]]
 name = "philanthrify-factory"
 version = "0.0.0"
 dependencies = [
@@ -672,6 +689,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "philanthrify-platform-dao"
+version = "0.0.0"
+dependencies = [
+ "multiversx-sc",
+ "multiversx-sc-scenario",
+]
+
+[[package]]
+name = "philanthrify-platform-dao-abi"
+version = "0.0.0"
+dependencies = [
+ "multiversx-sc",
+ "multiversx-sc-meta-lib",
+ "philanthrify-platform-dao",
+]
+
+[[package]]
 name = "philanthrify-project"
 version = "0.0.0"
 dependencies = [
@@ -686,6 +720,23 @@ dependencies = [
  "multiversx-sc",
  "multiversx-sc-meta-lib",
  "philanthrify-project",
+]
+
+[[package]]
+name = "philanthrify-project-donor-dao"
+version = "0.0.0"
+dependencies = [
+ "multiversx-sc",
+ "multiversx-sc-scenario",
+]
+
+[[package]]
+name = "philanthrify-project-donor-dao-abi"
+version = "0.0.0"
+dependencies = [
+ "multiversx-sc",
+ "multiversx-sc-meta-lib",
+ "philanthrify-project-donor-dao",
 ]
 
 [[package]]
