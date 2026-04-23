@@ -5,6 +5,19 @@ extern crate alloc;
 multiversx_sc::imports!();
 multiversx_sc::derive_imports!();
 
+use multiversx_sc::types::heap::Address;
+
+pub mod philsoul_proxy {
+    #[allow(unused_imports)]
+    use multiversx_sc::proxy_imports::*;
+
+    #[multiversx_sc::proxy]
+    pub trait PhilSoul {
+        #[view(balanceOf)]
+        fn balance_of(&self, address: ManagedAddress) -> u64;
+    }
+}
+
 /// A minimal PlatformDAO contract:
 /// - Token-weighted governance for platform decisions
 /// - Linear voting power: 1 token balance unit = 1 vote (clamped to u64)
@@ -14,8 +27,7 @@ multiversx_sc::derive_imports!();
 /// Note: This contract stores the snapshot for the voter list passed during `create_proposal`.
 /// For best production UX, you would typically restrict/curate the snapshot voter set (e.g. via a voter registry).
 ///
-/// **Demo mode** (`demo_mode = true` at init): ignores real ESDT balances and treats every non-zero
-/// address as having voting power **1**. Lets you demo proposals without issuing $PHIL. **Do not use in production.**
+/// Production-only: voting power always comes from real balances (PhilSoul or ESDT).
 #[type_abi]
 #[derive(
     Clone, TopEncode, TopDecode, NestedEncode, NestedDecode
@@ -53,7 +65,8 @@ pub trait PhilanthrifyPlatformDao {
         phil_token_id: TokenIdentifier,
         quorum_percent: u64,
         voting_period_blocks: u64,
-        demo_mode: bool,
+        use_philsoul: bool,
+        philsoul_address: ManagedAddress,
     ) {
         require!(
             quorum_percent > 0 && quorum_percent <= 100,
@@ -68,7 +81,8 @@ pub trait PhilanthrifyPlatformDao {
         self.phil_token_id().set(&phil_token_id);
         self.quorum_percent().set(&quorum_percent);
         self.voting_period_blocks().set(&voting_period_blocks);
-        self.demo_mode().set(demo_mode);
+        self.use_philsoul().set(use_philsoul);
+        self.philsoul_address().set(&philsoul_address);
         self.proposal_count().set(0u64);
     }
 
@@ -97,13 +111,15 @@ pub trait PhilanthrifyPlatformDao {
         let block_nonce = self.blockchain().get_block_nonce();
         let voting_ends_at = block_nonce + self.voting_period_blocks().get();
 
-        // Snapshot: store (address, power) in parallel vectors.
+        // Snapshot: `SingleValueMapper` per (proposal_id, address bytes); see mappers `vpe` / `hve`.
         let mut total_power = 0u64;
         for voter in voters {
             let power = self.get_token_voting_power_from_esdt_balance(&voter);
             if power > 0 {
-                self.proposal_snapshot_addresses(proposal_id).push(&voter);
-                self.proposal_snapshot_powers(proposal_id).push(&power);
+                // One `SingleValueMapper` per (proposal_id, pubkey) — avoid nested `MapMapper`
+                // scoped by u64, which is unreliable in some multiversx-sc / VM combinations (esp. id 0).
+                let addr = voter.to_address();
+                self.proposal_voter_entry(proposal_id, &addr).set(power);
                 total_power += power;
             }
         }
@@ -132,8 +148,11 @@ pub trait PhilanthrifyPlatformDao {
         require!(!self.proposals(proposal_id).is_empty(), "Proposal does not exist");
 
         let caller = self.blockchain().get_caller();
+        // Empty = not yet voted. (Do not negate is_empty: that would require a prior vote to pass.)
         require!(
-            !self.proposal_has_voted().contains_key(&(proposal_id, caller.clone())),
+            self
+                .proposal_has_voted_entry(proposal_id, &caller.to_address())
+                .is_empty(),
             "Already voted"
         );
 
@@ -146,7 +165,8 @@ pub trait PhilanthrifyPlatformDao {
         let power = self.get_voting_power_from_snapshot(proposal_id, &caller);
         require!(power > 0, "No voting power for this proposal");
 
-        self.proposal_has_voted().insert((proposal_id, caller.clone()), true);
+        self.proposal_has_voted_entry(proposal_id, &caller.to_address())
+            .set(true);
 
         if for_proposal {
             proposal.votes_for += power;
@@ -243,9 +263,19 @@ pub trait PhilanthrifyPlatformDao {
         (self.quorum_percent().get(), self.voting_period_blocks().get())
     }
 
-    #[view(getDemoMode)]
-    fn get_demo_mode(&self) -> bool {
-        self.demo_mode().get()
+    #[view(getProposalCount)]
+    fn get_proposal_count_view(&self) -> u64 {
+        self.proposal_count().get()
+    }
+
+    #[view(getPhilSoulAddress)]
+    fn get_philsoul_address(&self) -> ManagedAddress {
+        self.philsoul_address().get()
+    }
+
+    #[view(getUsePhilSoul)]
+    fn get_use_philsoul(&self) -> bool {
+        self.use_philsoul().get()
     }
 
     #[view(getPlatformParam)]
@@ -264,9 +294,13 @@ pub trait PhilanthrifyPlatformDao {
         if address.is_zero() {
             return 0;
         }
-        if self.demo_mode().get() {
-            // Demo / progress showcase: no real token required.
-            return 1;
+
+        if self.use_philsoul().get() {
+            let philsoul = self.philsoul_address().get();
+            return self
+                .philsoul_proxy(philsoul)
+                .balance_of(address.clone())
+                .execute_on_dest_context();
         }
 
         let token_id = self.phil_token_id().get();
@@ -279,15 +313,13 @@ pub trait PhilanthrifyPlatformDao {
     }
 
     fn get_voting_power_from_snapshot(&self, proposal_id: u64, address: &ManagedAddress) -> u64 {
-        let addresses = self.proposal_snapshot_addresses(proposal_id);
-        let powers = self.proposal_snapshot_powers(proposal_id);
-        let len = addresses.len();
-        for i in 0..len {
-            if addresses.get(i) == *address {
-                return powers.get(i);
-            }
+        let addr = address.to_address();
+        let m = self.proposal_voter_entry(proposal_id, &addr);
+        if m.is_empty() {
+            0u64
+        } else {
+            m.get()
         }
-        0
     }
 
     // =========================
@@ -331,8 +363,12 @@ pub trait PhilanthrifyPlatformDao {
     #[storage_mapper("voting_period_blocks")]
     fn voting_period_blocks(&self) -> SingleValueMapper<u64>;
 
-    #[storage_mapper("demo_mode")]
-    fn demo_mode(&self) -> SingleValueMapper<bool>;
+    #[storage_mapper("use_philsoul")]
+    fn use_philsoul(&self) -> SingleValueMapper<bool>;
+
+    #[view(getPhilSoulAddressStorage)]
+    #[storage_mapper("philsoul_address")]
+    fn philsoul_address(&self) -> SingleValueMapper<ManagedAddress>;
 
     #[storage_mapper("proposal_count")]
     fn proposal_count(&self) -> SingleValueMapper<u64>;
@@ -341,17 +377,27 @@ pub trait PhilanthrifyPlatformDao {
     #[storage_mapper("proposals")]
     fn proposals(&self, id: u64) -> SingleValueMapper<Proposal<Self::Api>>;
 
-    #[storage_mapper("proposal_snapshot_addresses")]
-    fn proposal_snapshot_addresses(&self, id: u64) -> VecMapper<ManagedAddress>;
+    /// Snapshot power: one cell per (proposal_id, 32-byte account pubkey). Nested `MapMapper`
+    /// on `u64` was not reliably readable on get in some toolchains; this layout is the standard pattern.
+    #[storage_mapper("vpe")]
+    fn proposal_voter_entry(
+        &self,
+        proposal_id: u64,
+        voter: &Address,
+    ) -> SingleValueMapper<u64>;
 
-    #[storage_mapper("proposal_snapshot_powers")]
-    fn proposal_snapshot_powers(&self, id: u64) -> VecMapper<u64>;
-
-    #[storage_mapper("proposal_has_voted")]
-    fn proposal_has_voted(&self) -> MapMapper<(u64, ManagedAddress), bool>;
+    #[storage_mapper("hve")]
+    fn proposal_has_voted_entry(
+        &self,
+        proposal_id: u64,
+        voter: &Address,
+    ) -> SingleValueMapper<bool>;
 
     /// A generic key/value storage updated by executed proposals (demo action).
     #[storage_mapper("platform_params")]
     fn platform_params(&self) -> MapMapper<ManagedBuffer, ManagedBuffer>;
+
+    #[proxy]
+    fn philsoul_proxy(&self, to: ManagedAddress) -> philsoul_proxy::Proxy<Self::Api>;
 }
 

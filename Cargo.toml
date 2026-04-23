@@ -10,6 +10,8 @@ members = [
   "philanthrify-charity-dao/meta",
   "philanthrify-platform-dao",
   "philanthrify-platform-dao/meta",
+  "philanthrify-philsoul",
+  "philanthrify-philsoul/meta",
   "philanthrify-project-donor-dao",
   "philanthrify-project-donor-dao/meta",
   "philanthrify-project",
