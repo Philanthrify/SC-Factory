@@ -26,6 +26,17 @@ The system consists of three main smart contracts:
 - Can only receive funds through proper donation flow
 - Supports batch donations
 
+## 📁 Repository structure
+
+- **`philanthrify-factory/`**: Factory contract (global NFT collection + platform stats)
+- **`philanthrify-charity/`**: Charity contract (donations + project deployment)
+- **`philanthrify-project/`**: Project contract (project-level fundraising)
+
+Main contract entrypoints:
+
+- **Factory**: `philanthrify-factory/src/lib.rs`
+- **Charity**: `philanthrify-charity/src/lib.rs`
+- **Project**: `philanthrify-project/src/lib.rs`
 
 ## 🔄 Donation Flow
 
@@ -40,4 +51,8 @@ Donor → Charity → Project → Factory (mints NFT) → NFT sent to Donor
 - Owner-only functions for critical operations
 - Template validation before deployment
 - Upgradeable contracts 
+
+## 📜 License
+
+Licensed under the **MIT License**. See `LICENSE`.
 
